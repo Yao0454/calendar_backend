@@ -81,20 +81,22 @@ async def extract(
 
     try:
         if req.text:
-            result = await extractor.extract_from_text(req.text)
+            result = await extractor.extract_from_text(req.text, req.current_date)
 
         elif req.image_base64:
             mime = req.image_mime or "image/jpeg"
             compressed_b64, compressed_mime = compress_image_base64(
                 req.image_base64, mime
             )
-            result = await extractor.extract_from_image(compressed_b64, compressed_mime)
+            result = await extractor.extract_from_image(
+                compressed_b64, compressed_mime, req.current_date
+            )
 
         else:
             file_type = (req.file_type or "").lower()
             if file_type == "pdf":
                 text = extract_pdf_text(str(req.file_base64))
-                result = await extractor.extract_from_text(text)
+                result = await extractor.extract_from_text(text, req.current_date)
             else:
                 raise HTTPException(
                     status_code=400, detail=f"不支持的文件类型：{file_type}"
