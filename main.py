@@ -1,10 +1,17 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from auth import deps as auth_deps
+from auth import router as auth_router
+from auth.auth_service import AuthService
+from auth.models import SessionPrincipal
+from auth.stores.session_store import SessionStore
+from auth.stores.user_store import UserStore
 from config import MODEL_NAME
 from models import Event, ExtractRequest, ExtractResponse, HealthResponse, Todo
 from services import extractor
@@ -15,6 +22,15 @@ from services.ollama import (
     OllamaUnavailableError,
     is_available,
 )
+
+# ── Auth setup ────────────────────────────────────────────────────────────────
+_DB = Path(__file__).parent / "data" / "db"
+_user_store = UserStore(_DB / "users.json")
+_session_store = SessionStore(_DB / "sessions.json")
+_auth_svc = AuthService(_user_store, _session_store)
+
+auth_deps.set_session_store(_session_store)
+auth_router.set_auth_service(_auth_svc)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +53,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Calendar Extractor", lifespan=lifespan)
+app.include_router(auth_router.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +70,10 @@ async def health():
 
 
 @app.post("/extract", response_model=ExtractResponse)
-async def extract(req: ExtractRequest):
+async def extract(
+    req: ExtractRequest,
+    _session: SessionPrincipal = Depends(auth_deps.get_current_session),
+):
     if not req.text and not req.image_base64 and not req.file_base64:
         raise HTTPException(
             status_code=400, detail="请提供 text、image_base64 或 file_base64 之一"

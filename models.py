@@ -9,6 +9,7 @@ class ExtractRequest(BaseModel):
     image_mime: str | None = "image/jpeg"
     file_base64: str | None = None
     file_type: str | None = None
+    current_date: str | None = None  # e.g. "2026-04-26", helps model resolve relative dates
 
 
 class Event(BaseModel):
