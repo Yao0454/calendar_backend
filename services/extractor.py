@@ -2,11 +2,6 @@ import json
 import logging
 
 from services import ollama
-from services.ollama import (
-    OllamaModelNotFoundError,
-    OllamaTimeoutError,
-    OllamaUnavailableError,
-)
 
 logger = logging.getLogger(__name__)
 

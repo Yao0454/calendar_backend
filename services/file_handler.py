@@ -27,9 +27,9 @@ def compress_image_base64(image_b64: str, mime: str) -> tuple[str, str]:
         quality -= 10
     else:
         # Scale down if quality reduction wasn't enough
-        scale = (MAX_IMAGE_BYTES / buf.tell()) ** 0.5
+        scale = (MAX_IMAGE_BYTES / buf.tell()) ** 0.5  # type: ignore
         new_size = (int(img.width * scale), int(img.height * scale))
-        img = img.resize(new_size, Image.LANCZOS)
+        img = img.resize(new_size, Image.LANCZOS)  # type: ignore
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=60)
 
@@ -45,4 +45,4 @@ def extract_pdf_text(file_b64: str) -> str:
     doc = fitz.open(stream=raw, filetype="pdf")
     pages_text = [page.get_text() for page in doc]
     doc.close()
-    return "\n".join(pages_text)
+    return "\n".join(pages_text)  # type: ignore
