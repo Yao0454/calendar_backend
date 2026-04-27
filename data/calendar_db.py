@@ -136,7 +136,7 @@ def create_todo(user_id: str, data: dict) -> dict:
         cur = c.execute(
             "INSERT INTO todos(user_id,title,deadline,priority,notes,is_done,is_pinned,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?)",
-            (user_id, data["title"], data.get("deadline"), data.get("priority", "medium"),
+            (user_id, data["title"], data.get("deadline"), data.get("priority") or "medium",
              data.get("notes"), 0, 0, now, now),
         )
         return dict(c.execute("SELECT * FROM todos WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -148,7 +148,7 @@ def update_todo(todo_id: int, user_id: str, data: dict) -> dict | None:
         c.execute(
             "UPDATE todos SET title=?,deadline=?,priority=?,notes=?,is_done=?,is_pinned=?,updated_at=?"
             " WHERE id=? AND user_id=?",
-            (data["title"], data.get("deadline"), data.get("priority", "medium"),
+            (data["title"], data.get("deadline"), data.get("priority") or "medium",
              data.get("notes"), 1 if data.get("is_done") else 0,
              1 if data.get("is_pinned") else 0, now, todo_id, user_id),
         )
@@ -186,7 +186,7 @@ def bulk_insert_todos(user_id: str, todos: list[dict]) -> list[dict]:
                 "INSERT INTO todos(user_id,title,deadline,priority,notes,is_done,is_pinned,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?)",
                 (user_id, t.get("title", ""), t.get("deadline"),
-                 t.get("priority", "medium"), t.get("notes"), 0, 0, now, now),
+                 t.get("priority") or "medium", t.get("notes"), 0, 0, now, now),
             )
             result.append(dict(c.execute("SELECT * FROM todos WHERE id=?", (cur.lastrowid,)).fetchone()))
     return result
