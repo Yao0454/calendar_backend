@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -12,24 +12,10 @@ class ExtractRequest(BaseModel):
     current_date: str | None = None  # e.g. "2026-04-26", helps model resolve relative dates
 
 
-class Event(BaseModel):
-    title: str | None = None
-    date: str | None = None
-    time: str | None = None
-    location: str | None = None
-    notes: str | None = None
-
-
-class Todo(BaseModel):
-    title: str | None = None
-    deadline: str | None = None
-    priority: Literal["high", "medium", "low"] | None = None
-    notes: str | None = None
-
-
 class ExtractResponse(BaseModel):
-    events: list[Event] = []
-    todos: list[Todo] = []
+    """Returned after AI extraction. Events/todos include server-assigned IDs for cloud sync."""
+    events: list[dict[str, Any]] = []
+    todos: list[dict[str, Any]] = []
 
 
 class HealthResponse(BaseModel):

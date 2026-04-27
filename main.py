@@ -13,7 +13,9 @@ from auth.models import SessionPrincipal
 from auth.stores.session_store import SessionStore
 from auth.stores.user_store import UserStore
 from config import MODEL_NAME
-from models import Event, ExtractRequest, ExtractResponse, HealthResponse, Todo
+from data import calendar_db
+from routes import items_router
+from models import ExtractRequest, ExtractResponse, HealthResponse
 from services import extractor
 from services.file_handler import compress_image_base64, extract_pdf_text
 from services.ollama import (
@@ -43,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    calendar_db.init_db()          # create tables if they don't exist
+    logger.info("Calendar DB initialised")
     if await is_available():
         logger.info("Ollama is reachable at startup")
     else:
@@ -54,6 +58,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Calendar Extractor", lifespan=lifespan)
 app.include_router(auth_router.router)
+app.include_router(items_router.router)   # GET/POST/PUT/DELETE /items/...
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,50 +77,36 @@ async def health():
 @app.post("/extract", response_model=ExtractResponse)
 async def extract(
     req: ExtractRequest,
-    _session: SessionPrincipal = Depends(auth_deps.get_current_session),
+    session: SessionPrincipal = Depends(auth_deps.get_current_session),
 ):
     if not req.text and not req.image_base64 and not req.file_base64:
-        raise HTTPException(
-            status_code=400, detail="请提供 text、image_base64 或 file_base64 之一"
-        )
+        raise HTTPException(status_code=400, detail="请提供 text、image_base64 或 file_base64 之一")
 
     try:
         if req.text:
             result = await extractor.extract_from_text(req.text, req.current_date)
-
         elif req.image_base64:
             mime = req.image_mime or "image/jpeg"
-            compressed_b64, compressed_mime = compress_image_base64(
-                req.image_base64, mime
-            )
-            result = await extractor.extract_from_image(
-                compressed_b64, compressed_mime, req.current_date
-            )
-
+            b64, mime = compress_image_base64(req.image_base64, mime)
+            result = await extractor.extract_from_image(b64, mime, req.current_date)
         else:
             file_type = (req.file_type or "").lower()
-            if file_type == "pdf":
-                text = extract_pdf_text(str(req.file_base64))
-                result = await extractor.extract_from_text(text, req.current_date)
-            else:
-                raise HTTPException(
-                    status_code=400, detail=f"不支持的文件类型：{file_type}"
-                )
+            if file_type != "pdf":
+                raise HTTPException(status_code=400, detail=f"不支持的文件类型：{file_type}")
+            text = extract_pdf_text(str(req.file_base64))
+            result = await extractor.extract_from_text(text, req.current_date)
 
     except OllamaUnavailableError:
-        raise HTTPException(
-            status_code=503, detail="Ollama 服务不可达，请确认已运行 ollama serve"
-        )
+        raise HTTPException(status_code=503, detail="Ollama 服务不可达，请确认已运行 ollama serve")
     except OllamaModelNotFoundError as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"模型 {e.model} 未找到，请运行 ollama pull {e.model}",
-        )
+        raise HTTPException(status_code=503, detail=f"模型 {e.model} 未找到，请运行 ollama pull {e.model}")
     except OllamaTimeoutError:
         raise HTTPException(status_code=504, detail="Ollama 推理超时")
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    events = [Event(**e) for e in result.get("events", [])]
-    todos = [Todo(**t) for t in result.get("todos", [])]
-    return ExtractResponse(events=events, todos=todos)
+    # ── Save to server DB (cloud sync) ────────────────────────────────────────
+    saved_events = calendar_db.bulk_insert_events(session.user_id, result.get("events", []))
+    saved_todos  = calendar_db.bulk_insert_todos(session.user_id,  result.get("todos",  []))
+
+    return ExtractResponse(events=saved_events, todos=saved_todos)
