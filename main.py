@@ -14,7 +14,7 @@ from auth.stores.session_store import SessionStore
 from auth.stores.user_store import UserStore
 from config import MODEL_NAME
 from data import calendar_db
-from routes import items_router
+from routes import items_router, chat_router
 from models import ExtractRequest, ExtractResponse, HealthResponse
 from services import extractor
 from services.file_handler import compress_image_base64, extract_pdf_text
@@ -58,7 +58,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Calendar Extractor", lifespan=lifespan)
 app.include_router(auth_router.router)
-app.include_router(items_router.router)   # GET/POST/PUT/DELETE /items/...
+app.include_router(items_router.router)
+app.include_router(chat_router.router)
 
 app.add_middleware(
     CORSMiddleware,

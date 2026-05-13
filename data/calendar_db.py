@@ -82,6 +82,32 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_papers_date ON papers(published_date);
             CREATE INDEX IF NOT EXISTS idx_reports_user ON daily_reports(user_id);
             CREATE INDEX IF NOT EXISTS idx_reports_date ON daily_reports(report_date);
+            
+            -- 对话消息表
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         TEXT    NOT NULL,
+                session_id      TEXT    NOT NULL,
+                role            TEXT    NOT NULL,
+                content         TEXT    NOT NULL,
+                created_at      TEXT    NOT NULL
+            );
+            
+            -- 规划草稿表
+            CREATE TABLE IF NOT EXISTS planning_drafts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         TEXT    NOT NULL,
+                title           TEXT,
+                description     TEXT,
+                proposed_events TEXT    NOT NULL,
+                proposed_todos  TEXT    NOT NULL,
+                status          TEXT    NOT NULL DEFAULT 'draft',
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_chat_user_session ON chat_messages(user_id, session_id);
+            CREATE INDEX IF NOT EXISTS idx_planning_user ON planning_drafts(user_id);
         """)
 
 
@@ -491,3 +517,145 @@ def increment_report_download(report_id: int) -> None:
             "UPDATE daily_reports SET download_count = download_count + 1 WHERE id=?",
             (report_id,),
         )
+
+
+# ── Chat Messages ─────────────────────────────────────────────────────────────
+
+
+def save_chat_message(user_id: str, session_id: str, role: str, content: str) -> dict:
+    msg_id = None
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO chat_messages (user_id, session_id, role, content, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, session_id, role, content, _now())
+        )
+        msg_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return {
+        "id": msg_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "created_at": _now()
+    }
+
+
+def get_chat_history(user_id: str, session_id: str, limit: int = 50) -> list:
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT id, user_id, session_id, role, content, created_at
+               FROM chat_messages
+               WHERE user_id=? AND session_id=?
+               ORDER BY created_at ASC
+               LIMIT ?""",
+            (user_id, session_id, limit)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_chat_session(user_id: str, session_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM chat_messages WHERE user_id=? AND session_id=?",
+            (user_id, session_id)
+        )
+
+
+# ── Planning Drafts ───────────────────────────────────────────────────────────
+
+
+def create_planning_draft(
+    user_id: str,
+    title: str | None,
+    description: str | None,
+    proposed_events: list,
+    proposed_todos: list
+) -> dict:
+    now = _now()
+    draft_id = None
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO planning_drafts
+               (user_id, title, description, proposed_events, proposed_todos, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)""",
+            (
+                user_id,
+                title,
+                description,
+                json.dumps(proposed_events),
+                json.dumps(proposed_todos),
+                now,
+                now
+            )
+        )
+        draft_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return get_planning_draft(draft_id, user_id)
+
+
+def get_planning_draft(draft_id: int, user_id: str) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM planning_drafts WHERE id=? AND user_id=?",
+            (draft_id, user_id)
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["proposed_events"] = json.loads(result["proposed_events"])
+    result["proposed_todos"] = json.loads(result["proposed_todos"])
+    return result
+
+
+def get_planning_drafts(user_id: str, status: str | None = None) -> list:
+    with _conn() as c:
+        if status:
+            rows = c.execute(
+                """SELECT * FROM planning_drafts WHERE user_id=? AND status=?
+                   ORDER BY updated_at DESC""",
+                (user_id, status)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT * FROM planning_drafts WHERE user_id=?
+                   ORDER BY updated_at DESC""",
+                (user_id,)
+            ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["proposed_events"] = json.loads(d["proposed_events"])
+        d["proposed_todos"] = json.loads(d["proposed_todos"])
+        result.append(d)
+    return result
+
+
+def confirm_planning_draft(draft_id: int, user_id: str) -> dict | None:
+    draft = get_planning_draft(draft_id, user_id)
+    if not draft or draft["status"] != "draft":
+        return None
+
+    saved_events = bulk_insert_events(user_id, draft["proposed_events"])
+    saved_todos = bulk_insert_todos(user_id, draft["proposed_todos"])
+
+    with _conn() as c:
+        c.execute(
+            "UPDATE planning_drafts SET status='confirmed', updated_at=? WHERE id=?",
+            (_now(), draft_id)
+        )
+
+    return {
+        "draft_id": draft_id,
+        "events": saved_events,
+        "todos": saved_todos
+    }
+
+
+def reject_planning_draft(draft_id: int, user_id: str) -> bool:
+    with _conn() as c:
+        c.execute(
+            """UPDATE planning_drafts SET status='rejected', updated_at=? 
+               WHERE id=? AND user_id=?""",
+            (_now(), draft_id, user_id)
+        )
+    return True
