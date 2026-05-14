@@ -14,10 +14,11 @@ from auth.stores.session_store import SessionStore
 from auth.stores.user_store import UserStore
 from config import MODEL_NAME
 from data import calendar_db
-from routes import items_router, chat_router
+from routes import items_router, chat_router, profile_router, recommendations_router, arxiv_router
 from models import ExtractRequest, ExtractResponse, HealthResponse
 from services import extractor
 from services.file_handler import compress_image_base64, extract_pdf_text
+from services.background_tasks import background_manager
 from services.ollama import (
     OllamaModelNotFoundError,
     OllamaTimeoutError,
@@ -45,21 +46,32 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    calendar_db.init_db()          # create tables if they don't exist
+    calendar_db.init_db()
     logger.info("Calendar DB initialised")
+    
+    background_manager.start()
+    logger.info("Background tasks started")
+    
     if await is_available():
         logger.info("Ollama is reachable at startup")
     else:
         logger.warning(
             "Ollama is NOT reachable — start 'ollama serve' before sending requests"
         )
+    
     yield
+    
+    background_manager.shutdown()
+    logger.info("Background tasks stopped")
 
 
 app = FastAPI(title="Calendar Extractor", lifespan=lifespan)
 app.include_router(auth_router.router)
 app.include_router(items_router.router)
 app.include_router(chat_router.router)
+app.include_router(profile_router.router)
+app.include_router(recommendations_router.router)
+app.include_router(arxiv_router.router)
 
 app.add_middleware(
     CORSMiddleware,

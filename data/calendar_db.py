@@ -108,6 +108,68 @@ def init_db() -> None:
             
             CREATE INDEX IF NOT EXISTS idx_chat_user_session ON chat_messages(user_id, session_id);
             CREATE INDEX IF NOT EXISTS idx_planning_user ON planning_drafts(user_id);
+            
+            -- 用户兴趣标签表
+            CREATE TABLE IF NOT EXISTS user_interests (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         TEXT    NOT NULL,
+                category        TEXT    NOT NULL,
+                tag             TEXT    NOT NULL,
+                keywords        TEXT    NOT NULL,
+                weight          REAL    DEFAULT 1.0,
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL,
+                UNIQUE(user_id, category, tag)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_user_interests ON user_interests(user_id);
+            
+            -- 内容项表（爬虫爬取的内容）
+            CREATE TABLE IF NOT EXISTS content_items (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                source          TEXT    NOT NULL,
+                source_id       TEXT    NOT NULL UNIQUE,
+                title           TEXT    NOT NULL,
+                description     TEXT,
+                url             TEXT,
+                author          TEXT,
+                published_date  TEXT,
+                content_type    TEXT,
+                tags            TEXT,
+                stars           INTEGER DEFAULT 0,
+                created_at      TEXT    NOT NULL
+            );
+            
+            -- 用户推荐表
+            CREATE TABLE IF NOT EXISTS user_recommendations (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             TEXT    NOT NULL,
+                content_id          INTEGER NOT NULL,
+                recommendation_score REAL   NOT NULL,
+                read                INTEGER DEFAULT 0,
+                saved               INTEGER DEFAULT 0,
+                created_at          TEXT    NOT NULL,
+                updated_at          TEXT    NOT NULL,
+                UNIQUE(user_id, content_id)
+            );
+            
+            -- 爬虫日志表
+            CREATE TABLE IF NOT EXISTS crawler_logs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                source           TEXT    NOT NULL,
+                status           TEXT    NOT NULL,
+                items_found      INTEGER DEFAULT 0,
+                items_saved      INTEGER DEFAULT 0,
+                error_message    TEXT,
+                started_at       TEXT    NOT NULL,
+                completed_at     TEXT,
+                duration_seconds INTEGER
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_content_source ON content_items(source);
+            CREATE INDEX IF NOT EXISTS idx_content_date ON content_items(published_date);
+            CREATE INDEX IF NOT EXISTS idx_recommendations_user ON user_recommendations(user_id);
+            CREATE INDEX IF NOT EXISTS idx_crawler_source ON crawler_logs(source);
         """)
 
 
@@ -659,3 +721,244 @@ def reject_planning_draft(draft_id: int, user_id: str) -> bool:
             (_now(), draft_id, user_id)
         )
     return True
+
+
+# ── User Interests ────────────────────────────────────────────────────────────
+
+
+def create_or_update_interest(
+    user_id: str,
+    category: str,
+    tag: str,
+    keywords: list,
+    weight: float = 1.0
+) -> dict:
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            """INSERT OR REPLACE INTO user_interests
+               (user_id, category, tag, keywords, weight, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, category, tag, json.dumps(keywords), weight, now, now)
+        )
+        result = c.execute(
+            "SELECT * FROM user_interests WHERE user_id=? AND category=? AND tag=?",
+            (user_id, category, tag)
+        ).fetchone()
+    return dict(result) if result else None
+
+
+def get_user_interests(user_id: str, category: str | None = None) -> list:
+    with _conn() as c:
+        if category:
+            rows = c.execute(
+                """SELECT * FROM user_interests WHERE user_id=? AND category=?
+                   ORDER BY weight DESC""",
+                (user_id, category)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT * FROM user_interests WHERE user_id=?
+                   ORDER BY category, weight DESC""",
+                (user_id,)
+            ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["keywords"] = json.loads(d["keywords"])
+        result.append(d)
+    return result
+
+
+def delete_interest(user_id: str, interest_id: int) -> bool:
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM user_interests WHERE id=? AND user_id=?",
+            (interest_id, user_id)
+        )
+    return True
+
+
+# ── Content Items ────────────────────────────────────────────────────────────
+
+
+def create_or_update_content(
+    source: str,
+    source_id: str,
+    title: str,
+    description: str | None,
+    url: str | None,
+    author: str | None,
+    published_date: str | None,
+    content_type: str,
+    tags: list | None = None,
+    stars: int = 0
+) -> dict | None:
+    now = _now()
+    try:
+        with _conn() as c:
+            c.execute(
+                """INSERT OR IGNORE INTO content_items
+                   (source, source_id, title, description, url, author,
+                    published_date, content_type, tags, stars, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    source,
+                    source_id,
+                    title,
+                    description,
+                    url,
+                    author,
+                    published_date,
+                    content_type,
+                    json.dumps(tags or []),
+                    stars,
+                    now
+                )
+            )
+            result = c.execute(
+                "SELECT * FROM content_items WHERE source=? AND source_id=?",
+                (source, source_id)
+            ).fetchone()
+        return dict(result) if result else None
+    except Exception:
+        return None
+
+
+def get_content_items(
+    source: str | None = None,
+    limit: int = 50,
+    offset: int = 0
+) -> list:
+    with _conn() as c:
+        if source:
+            rows = c.execute(
+                """SELECT * FROM content_items WHERE source=?
+                   ORDER BY published_date DESC
+                   LIMIT ? OFFSET ?""",
+                (source, limit, offset)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT * FROM content_items
+                   ORDER BY published_date DESC
+                   LIMIT ? OFFSET ?""",
+                (limit, offset)
+            ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["tags"] = json.loads(d.get("tags", "[]"))
+        result.append(d)
+    return result
+
+
+def get_content_by_id(content_id: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM content_items WHERE id=?",
+            (content_id,)
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["tags"] = json.loads(result.get("tags", "[]"))
+    return result
+
+
+# ── User Recommendations ────────────────────────────────────────────────────
+
+
+def create_recommendation(
+    user_id: str,
+    content_id: int,
+    recommendation_score: float
+) -> dict | None:
+    now = _now()
+    try:
+        with _conn() as c:
+            c.execute(
+                """INSERT OR REPLACE INTO user_recommendations
+                   (user_id, content_id, recommendation_score, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, content_id, recommendation_score, now, now)
+            )
+            result = c.execute(
+                "SELECT * FROM user_recommendations WHERE user_id=? AND content_id=?",
+                (user_id, content_id)
+            ).fetchone()
+        return dict(result) if result else None
+    except Exception:
+        return None
+
+
+def get_user_recommendations(user_id: str, unread_only: bool = False) -> list:
+    with _conn() as c:
+        if unread_only:
+            rows = c.execute(
+                """SELECT ur.*, ci.* FROM user_recommendations ur
+                   JOIN content_items ci ON ur.content_id = ci.id
+                   WHERE ur.user_id=? AND ur.read=0
+                   ORDER BY ur.recommendation_score DESC""",
+                (user_id,)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT ur.*, ci.* FROM user_recommendations ur
+                   JOIN content_items ci ON ur.content_id = ci.id
+                   WHERE ur.user_id=?
+                   ORDER BY ur.recommendation_score DESC""",
+                (user_id,)
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_recommendation_read(user_id: str, content_id: int) -> bool:
+    with _conn() as c:
+        c.execute(
+            """UPDATE user_recommendations SET read=1, updated_at=?
+               WHERE user_id=? AND content_id=?""",
+            (_now(), user_id, content_id)
+        )
+    return True
+
+
+def mark_recommendation_saved(user_id: str, content_id: int) -> bool:
+    with _conn() as c:
+        c.execute(
+            """UPDATE user_recommendations SET saved=1, updated_at=?
+               WHERE user_id=? AND content_id=?""",
+            (_now(), user_id, content_id)
+        )
+    return True
+
+
+# ── Crawler Logs ────────────────────────────────────────────────────────────
+
+
+def log_crawler_run(
+    source: str,
+    status: str,
+    items_found: int,
+    items_saved: int,
+    error_message: str | None = None,
+    duration_seconds: int | None = None
+) -> None:
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO crawler_logs
+               (source, status, items_found, items_saved, error_message,
+                started_at, completed_at, duration_seconds)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                source,
+                status,
+                items_found,
+                items_saved,
+                error_message,
+                now,
+                now,
+                duration_seconds
+            )
+        )

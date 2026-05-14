@@ -1,6 +1,7 @@
 """Chat & Planning routes"""
 
 import uuid
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -9,6 +10,8 @@ from auth.models import SessionPrincipal
 from data import calendar_db
 from services.planner_agent import planner
 from services.ollama import OllamaUnavailableError, OllamaTimeoutError, OllamaModelNotFoundError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -199,6 +202,7 @@ async def confirm_draft(
         result = calendar_db.confirm_planning_draft(draft_id, session.user_id)
         if not result:
             raise HTTPException(status_code=404, detail="Draft not found or already processed")
+        
         return {
             "status": "confirmed",
             "events_imported": len(result["events"]),
