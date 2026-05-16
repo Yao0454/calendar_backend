@@ -72,27 +72,24 @@ class RecommendationEngine:
 
         return 0.0
 
-    def calculate_freshness(self, published_date: str | None) -> float:
-        """计算时间新鲜度分数（指数衰减）
-        
-        Args:
-            published_date: 发布日期 (YYYY-MM-DD)
-            
-        Returns:
-            新鲜度分数 0-1
-        """
+    def calculate_freshness(self, published_date: str | None, source: str = "arxiv") -> float:
+        """计算时间新鲜度分数（指数衰减，来源感知）"""
         if not published_date:
             return 0.5
+
+        # GitHub repos stay relevant much longer than arxiv papers
+        half_life = {
+            "arxiv": self.freshness_half_life,
+            "huggingface": self.freshness_half_life,
+            "github": 365,
+        }.get(source, self.freshness_half_life)
 
         try:
             pub_date = datetime.strptime(published_date, "%Y-%m-%d")
             days_old = (datetime.now() - pub_date).days
-            
-            freshness = math.exp(-days_old / self.freshness_half_life)
-            return max(freshness, 0.0)
+            return max(math.exp(-days_old / half_life), 0.0)
         except Exception:
             return 0.5
-
     def calculate_popularity(self, content: Dict) -> float:
         """计算流行度分数
         
@@ -184,17 +181,27 @@ class RecommendationEngine:
         Returns:
             综合评分 0-1
         """
+        source = content.get("source", "arxiv")
         relevance = self.calculate_relevance(user_interests, content)
-        freshness = self.calculate_freshness(content.get("published_date"))
+        freshness = self.calculate_freshness(content.get("published_date"), source)
         popularity = self.calculate_popularity(content)
         diversity = self.calculate_diversity(content, recent_recommendations)
 
-        final_score = (
-            relevance * 0.4 +
-            freshness * 0.2 +
-            popularity * 0.2 +
-            diversity * 0.2
-        )
+        # GitHub: higher weight on relevance+popularity, lower on freshness
+        if source == "github":
+            final_score = (
+                relevance * 0.45 +
+                freshness * 0.10 +
+                popularity * 0.30 +
+                diversity * 0.15
+            )
+        else:
+            final_score = (
+                relevance * 0.40 +
+                freshness * 0.20 +
+                popularity * 0.20 +
+                diversity * 0.20
+            )
 
         return final_score
 
@@ -261,7 +268,7 @@ class RecommendationEngine:
             "sources": {}
         }
 
-        sources = ["arxiv", "github"]
+        sources = ["arxiv", "huggingface", "github"]
 
         for source in sources:
             all_content = calendar_db.get_content_items(source=source, limit=1000)

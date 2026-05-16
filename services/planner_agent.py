@@ -64,7 +64,12 @@ class PlannerAgent:
 - 合理分配任务的优先级
 - 为长期项目设置多个里程碑
 
-当用户接受你的规划后，你需要生成可以直接导入的 JSON 格式的事件和待办。"""
+重要交互规则（必须遵守）：
+- 只用自然语言与用户对话，清晰描述规划方案。
+- 绝对不要在聊天消息中输出 JSON 格式数据。
+- 绝对不要让用户回复任何特定文字（如"接受规划"）来确认。
+- 用户会通过 App 界面上的「生成草稿」按钮来生成结构化数据并导入日历，无需任何文字回复。
+- 当你认为规划方案已经完整时，直接告诉用户：「方案已完整，您可以点击下方的生成草稿按钮导入日历。」"""
 
     async def start_conversation(self, user_id: str, user_request: str) -> dict:
         schedule_context = self._get_user_schedule_context(user_id)

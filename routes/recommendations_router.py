@@ -24,8 +24,26 @@ async def get_recommendation_feed(
     recommendations = calendar_db.get_user_recommendations(session.user_id, unread_only)
     
     total = len(recommendations)
-    paginated = recommendations[offset:offset + limit]
-    
+    # Interleave sources so github/arxiv appear together in the feed
+    by_source: dict = {}
+    for rec in recommendations:
+        s = rec.get("source", "arxiv")
+        by_source.setdefault(s, []).append(rec)
+
+    mixed = []
+    source_keys = sorted(by_source.keys())
+    iters = {s: iter(by_source[s]) for s in source_keys}
+    active = list(source_keys)
+    while active and len(mixed) < total:
+        for s in list(active):
+            item = next(iters[s], None)
+            if item is None:
+                active.remove(s)
+            else:
+                mixed.append(item)
+
+    paginated = mixed[offset:offset + limit]
+
     return {
         "total": total,
         "limit": limit,
@@ -62,6 +80,24 @@ async def save_content(
 ):
     calendar_db.mark_recommendation_saved(session.user_id, content_id)
     return {"status": "saved"}
+
+
+@router.post("/refresh")
+async def refresh_recommendations(
+    session: SessionPrincipal = Depends(get_current_session)
+):
+    """手动触发爬虫 + 推荐生成（无需等待定时任务）"""
+    from services.recommendation_engine import recommendation_engine
+    from services.background_tasks import background_manager
+    try:
+        # If no content exists yet, run crawler first
+        content_count = len(calendar_db.get_content_items(source="arxiv", limit=1))
+        if content_count == 0:
+            await background_manager.run_crawlers()
+        stats = await recommendation_engine.generate_recommendations(session.user_id)
+        return {"status": "done", "stats": stats}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @router.get("/stats/summary")

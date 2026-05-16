@@ -72,7 +72,11 @@ async def update_interest(
     if not target:
         raise HTTPException(status_code=404, detail="Interest not found")
 
-    keywords = req.keywords or target["keywords"]
+    if req.keywords is not None:
+        from services.keyword_expander import expand_keywords
+        keywords = await expand_keywords(req.keywords)
+    else:
+        keywords = target["keywords"]
     weight = req.weight if req.weight is not None else target["weight"]
 
     updated = calendar_db.create_or_update_interest(

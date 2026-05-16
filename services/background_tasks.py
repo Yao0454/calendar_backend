@@ -6,9 +6,10 @@ from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from datetime import datetime as _dt
 
 from data import calendar_db
-from services.content_crawler import arxiv_crawler, github_crawler
+from services.content_crawler import arxiv_crawler, github_crawler, huggingface_crawler
 from services.recommendation_engine import recommendation_engine
 from services.report_generator import generate_reports_for_all_users
 from services.profile_extractor import profile_extractor
@@ -34,6 +35,16 @@ class BackgroundTaskManager:
             IntervalTrigger(hours=6),
             id="periodic_crawl",
             name="Periodic Content Crawl",
+            replace_existing=True,
+            next_run_time=_dt.now()  # run immediately on startup
+        )
+
+        self.scheduler.add_job(
+            self.generate_recommendations_for_all_users,
+            "date",
+            run_date=_dt.now(),
+            id="startup_recommendations",
+            name="Startup Recommendations",
             replace_existing=True
         )
 
@@ -79,23 +90,49 @@ class BackgroundTaskManager:
         start_time = datetime.now()
         
         await self._run_arxiv_crawler()
-        
+
         await self._run_github_crawler()
+
+        await self._run_huggingface_crawler()
 
         duration = (datetime.now() - start_time).total_seconds()
         logger.info(f"爬虫任务完成，耗时 {duration:.2f} 秒")
 
     async def _run_arxiv_crawler(self):
-        """运行 arXiv 爬虫"""
+        """运行 arXiv 爬虫，关键词融合用户兴趣"""
         try:
-            keywords = ["machine learning", "deep learning", "neural networks", "AI"]
-            categories = ["cs.LG", "cs.AI", "cs.CV"]
-            
+            import json as _json
+            base_keywords = ["machine learning", "deep learning", "neural networks",
+                             "AI", "large language model", "LLM", "agent", "transformer"]
+            base_categories = ["cs.AI", "cs.LG", "cs.CV", "cs.CL"]
+
+            # 从用户兴趣中提取英文关键词补充搜索
+            try:
+                all_interests = calendar_db.get_user_interests("")
+                for interest in all_interests:
+                    raw_kw = interest.get("keywords", [])
+                    if isinstance(raw_kw, str):
+                        try:
+                            raw_kw = _json.loads(raw_kw)
+                        except Exception:
+                            raw_kw = []
+                    for kw in raw_kw:
+                        if kw and any(c.isascii() and c.isalpha() for c in str(kw)):
+                            for part in str(kw).replace(";", ",").split(","):
+                                part = part.strip()
+                                if part and len(part) > 1:
+                                    base_keywords.append(part)
+            except Exception:
+                pass
+
+            keywords = list(dict.fromkeys(base_keywords))
+            categories = base_categories
+
             papers = await arxiv_crawler.search(
                 keywords,
                 categories=categories,
                 days=7,
-                limit=50
+                limit=100
             )
             
             saved_count = 0

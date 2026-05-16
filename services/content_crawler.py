@@ -32,7 +32,7 @@ class ArxivCrawler(ContentCrawler):
     def __init__(self):
         super().__init__()
         self.source = "arxiv"
-        self.base_url = "http://export.arxiv.org/api/query"
+        self.base_url = "https://export.arxiv.org/api/query"
 
     async def search(
         self,
@@ -66,7 +66,7 @@ class ArxivCrawler(ContentCrawler):
         logger.info(f"arXiv 搜索: {query}")
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await client.get(
                     self.base_url,
                     params={
@@ -135,19 +135,22 @@ class GitHubCrawler(ContentCrawler):
             days: 搜索最近 N 天创建的仓库
             limit: 返回结果数量
         """
-        query_parts = [f'"{" ".join(keywords)}"']
-        
+        # Use single-word keywords with OR (multi-word terms break GitHub OR syntax)
+        single_kws = [kw.strip() for kw in keywords if kw.strip() and " " not in kw.strip()]
+        if not single_kws:
+            single_kws = ["LLM", "transformer"]
+        kw_query = " OR ".join(single_kws[:6])
+        query_parts = [kw_query]
+
         if language:
             query_parts.append(f"language:{language}")
-        
-        start_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
-        query_parts.append(f"created:>={start_date}")
 
+        query_parts.append("stars:>10")
         query = " ".join(query_parts)
         logger.info(f"GitHub 搜索: {query}")
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=self.headers) as client:
                 response = await client.get(
                     f"{self.base_url}/search/repositories",
                     params={
@@ -184,5 +187,64 @@ class GitHubCrawler(ContentCrawler):
             return []
 
 
+
+
+class HuggingFaceCrawler(ContentCrawler):
+    """HuggingFace 每日论文爬虫 - 免费公开接口"""
+
+    def __init__(self):
+        super().__init__()
+        self.source = "huggingface"
+        self.base_url = "https://huggingface.co/api/daily_papers"
+
+    async def search(
+        self,
+        keywords: List[str] | None = None,
+        limit: int = 30
+    ) -> List[Dict]:
+        """获取 HuggingFace 每日热门论文"""
+        try:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                response = await client.get(self.base_url)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, list):
+                    logger.warning(f"HuggingFace: unexpected response type {type(data)}")
+                    return []
+
+            results = []
+            for item in data[:limit]:
+                paper = item.get("paper", {})
+                arxiv_id = paper.get("id", "")
+                authors = paper.get("authors", [])
+                author_str = ", ".join(
+                    [a.get("name", "") for a in authors[:3]]
+                )
+                pub_date = paper.get("publishedAt", "")
+                if pub_date:
+                    pub_date = pub_date[:10]
+
+                results.append({
+                    "source": self.source,
+                    "source_id": f"hf_{arxiv_id}",
+                    "title": paper.get("title", ""),
+                    "description": paper.get("summary", ""),
+                    "url": f"https://huggingface.co/papers/{arxiv_id}",
+                    "author": author_str,
+                    "published_date": pub_date,
+                    "content_type": "paper",
+                    "tags": paper.get("categories", []),
+                    "stars": item.get("upvotes", 0),
+                })
+
+            logger.info(f"HuggingFace: 获取到 {len(results)} 篇每日论文")
+            return results
+
+        except Exception as e:
+            logger.error(f"HuggingFace 爬虫失败: {e}")
+            return []
+
 arxiv_crawler = ArxivCrawler()
 github_crawler = GitHubCrawler()
+
+huggingface_crawler = HuggingFaceCrawler()
